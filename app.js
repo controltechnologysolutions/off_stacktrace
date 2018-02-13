@@ -2943,6 +2943,9 @@ function config(persistence, dialect) {
             (queryTuple, next) => {
                 var statement = queryTuple[0];
                 var args = queryTuple[1];
+                if (persistence.debug) {
+                    console.log(statement, args);
+                }
                 tx.executeSql(statement, args,
                     next, // success fn: go to next element
                     err => { // error fn
@@ -3548,6 +3551,9 @@ persistence.store.cordovasql.config = function (persistence, dbname, dbversion, 
     persistence.db.sqliteplugin.transaction = function (t) {
         var that = {};
         that.executeSql = function (query, args, successFn, errorFn) {
+            if (persistence.debug) {
+                console.log(query, args);
+            }
             window.rootlogger.get("persistence#transaction", ["persistence", "sql"]).debug(query, args);
             t.executeSql(query, args, function (_, result) {
                 if (successFn) {
@@ -3758,280 +3764,287 @@ try {
  * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-if(!window.persistence) { // persistence.js not loaded!
+if (!window.persistence) { // persistence.js not loaded!
   throw new Error("persistence.js should be loaded before persistence.migrations.js");
 }
 
-(function() {
-  
-    var Migrator = {
-      migrations: [],
-      
-      version: function(callback) {
-        persistence.transaction(function(t){
-          t.executeSql('SELECT current_version FROM schema_version', null, function(result){
-            if (result.length == 0) {
-              t.executeSql('INSERT INTO schema_version VALUES (0)', null, function(){
-                callback(0);
-              });
-            } else {
-              callback(result[0].current_version);
-            }
-          });
+(function () {
+
+  var Migrator = {
+    migrations: [],
+
+    version: function (callback) {
+      persistence.transaction(function (t) {
+        t.executeSql('SELECT current_version FROM schema_version', null, function (result) {
+          if (result.length == 0) {
+            t.executeSql('INSERT INTO schema_version VALUES (0)', null, function () {
+              callback(0);
+            });
+          } else {
+            callback(result[0].current_version);
+          }
         });
-      },
-      
-      setVersion: function(v, callback) {
-        persistence.transaction(function(t){
-          t.executeSql('UPDATE schema_version SET current_version = ?', [v], function(){
-            Migrator._version = v;
-            if (callback) callback();
-          });
+      });
+    },
+
+    setVersion: function (v, callback) {
+      persistence.transaction(function (t) {
+        t.executeSql('UPDATE schema_version SET current_version = ?', [v], function () {
+          Migrator._version = v;
+          if (callback) callback();
         });
-      },
-      
-      setup: function(callback) {
-        persistence.transaction(function(t){
-          t.executeSql('CREATE TABLE IF NOT EXISTS schema_version (current_version INTEGER)', null, function(){
-            // Creates a dummy migration just to force setting schema version when cleaning DB
-            Migrator.migration(0, { up: function() { }, down: function() { } });
-            if (callback) callback();
-          });
+      });
+    },
+
+    setup: function (callback) {
+      persistence.transaction(function (t) {
+        t.executeSql('CREATE TABLE IF NOT EXISTS schema_version (current_version INTEGER)', null, function () {
+          // Creates a dummy migration just to force setting schema version when cleaning DB
+          Migrator.migration(0, { up: function () { }, down: function () { } });
+          if (callback) callback();
         });
-      },
-      
-      // Method should only be used for testing
-      reset: function(callback) {
-        // Creates a dummy migration just to force setting schema version when cleaning DB
-        Migrator.migrations = [];
-        Migrator.migration(0, { up: function() { }, down: function() { } });
-        Migrator.setVersion(0, callback);
-      },
-      
-      migration: function(version, actions) {
-        Migrator.migrations[version] = new Migration(version, actions);
-        return Migrator.migrations[version];
-      },
-      
-      migrateUpTo: function(version, callback) {
-        var migrationsToRun = [];
-        
-        function migrateOne() {
-          var migration = migrationsToRun.pop();
-          
-          if (!migration) callback();
-          
-          migration.up(function(){
-            if (migrationsToRun.length > 0) {
-              migrateOne();
-            } else if (callback) {
-              callback();
-            }
-          });
-        }
-        
-        this.version(function(currentVersion){
-          for (var v = currentVersion+1; v <= version; v++)
-            migrationsToRun.unshift(Migrator.migrations[v]);
-          
+      });
+    },
+
+    // Method should only be used for testing
+    reset: function (callback) {
+      // Creates a dummy migration just to force setting schema version when cleaning DB
+      Migrator.migrations = [];
+      Migrator.migration(0, { up: function () { }, down: function () { } });
+      Migrator.setVersion(0, callback);
+    },
+
+    migration: function (version, actions) {
+      Migrator.migrations[version] = new Migration(version, actions);
+      return Migrator.migrations[version];
+    },
+
+    migrateUpTo: function (version, callback) {
+      var migrationsToRun = [];
+
+      function migrateOne() {
+        var migration = migrationsToRun.pop();
+
+        if (!migration) callback();
+
+        migration.up(function () {
           if (migrationsToRun.length > 0) {
             migrateOne();
           } else if (callback) {
             callback();
           }
-        });
-      },
-      
-      migrateDownTo: function(version, callback) {
-        var migrationsToRun = [];
-        
-        function migrateOne() {
-          var migration = migrationsToRun.pop();
-          
-          if (!migration) callback();
-          
-          migration.down(function(){
-            if (migrationsToRun.length > 0) {
-              migrateOne();
-            } else if (callback) {
-              callback();
-            }
-          });
-        }
-        
-        this.version(function(currentVersion){
-          for (var v = currentVersion; v > version; v--)
-            migrationsToRun.unshift(Migrator.migrations[v]);
-          
-          if (migrationsToRun.length > 0) {
-            migrateOne();
-          } else if (callback) {
-            callback();
-          }
-        });
-      },
-      
-      migrate: function(version, callback) {
-        if ( arguments.length === 1 ) {
-          callback = version;
-          version = this.migrations.length-1;
-        }
-        
-        this.version(function(curVersion){
-          if (curVersion < version)
-            Migrator.migrateUpTo(version, callback);
-          else if (curVersion > version)
-            Migrator.migrateDownTo(version, callback);
-          else
-            callback();
         });
       }
-    }
-    
-    var Migration = function(version, body) {
-      this.version = version;
-      // TODO check if actions contains up and down methods
-      this.body = body;
-      this.actions = [];
-    };
-    
-    Migration.prototype.executeActions = function(callback, customVersion) {
-      var actionsToRun = this.actions;
-      var version = (customVersion!==undefined) ? customVersion : this.version;
-      
-      persistence.transaction(function(tx){
-        function nextAction() {
-          if (actionsToRun.length == 0)
-            Migrator.setVersion(version, callback);
-          else {
-            var action = actionsToRun.pop();
-            action(tx, nextAction);
-          }
+
+      this.version(function (currentVersion) {
+        for (var v = currentVersion + 1; v <= version; v++)
+          migrationsToRun.unshift(Migrator.migrations[v]);
+
+        if (migrationsToRun.length > 0) {
+          migrateOne();
+        } else if (callback) {
+          callback();
         }
-        
-        nextAction();
       });
-    }
-    
-    Migration.prototype.up = function(callback) {
-      if (this.body.up) this.body.up.apply(this);
-      this.executeActions(callback);
-    }
-    
-    Migration.prototype.down = function(callback) {
-      if (this.body.down) this.body.down.apply(this);
-      this.executeActions(callback, this.version-1);
-    }
-    
-    Migration.prototype.createTable = function(tableName, callback) {
-      var table = new ColumnsHelper();
-      
-      if (callback) callback(table);
-      
-      var column;
-      var sql = 'CREATE TABLE ' + tableName + ' (id VARCHAR(32) PRIMARY KEY';
-      while (column = table.columns.pop())
-        sql += ', ' + column;
-      
-      this.executeSql(sql + ')');
-    }
-    
-    Migration.prototype.dropTable = function(tableName) {
-      var sql = 'DROP TABLE ' + tableName;
-      this.executeSql(sql);
-    }
-    
-    Migration.prototype.addColumn = function(tableName, columnName, columnType) {
-      var sql = 'ALTER TABLE ' + tableName + ' ADD ' + columnName + ' ' + columnType;
-      this.executeSql(sql);
-    }
-    
-    Migration.prototype.removeColumn = function(tableName, columnName) {
-      this.action(function(tx, nextCommand){
-        var sql = 'select sql from sqlite_master where type = "table" and name == "'+tableName+'"';
-        tx.executeSql(sql, null, function(result){
-          var columns = new RegExp("CREATE TABLE `\\w+` |\\w+ \\((.+)\\)").exec(result[0].sql)[1].split(', ');
-          var selectColumns = [];
-          var columnsSql = [];
-          
-          for (var i = 0; i < columns.length; i++) {
-            var colName = new RegExp("((`\\w+`)|(\\w+)) .+").exec(columns[i])[1];
-            if (colName == columnName) continue;
-            
-            columnsSql.push(columns[i]);
-            selectColumns.push(colName);
+    },
+
+    migrateDownTo: function (version, callback) {
+      var migrationsToRun = [];
+
+      function migrateOne() {
+        var migration = migrationsToRun.pop();
+
+        if (!migration) callback();
+
+        migration.down(function () {
+          if (migrationsToRun.length > 0) {
+            migrateOne();
+          } else if (callback) {
+            callback();
           }
-          columnsSql = columnsSql.join(', ');
-          selectColumns = selectColumns.join(', ');
-          
-          var queries = [];
-          queries.unshift(["ALTER TABLE " + tableName + " RENAME TO " + tableName + "_bkp;", null]);
-          queries.unshift(["CREATE TABLE " + tableName + " (" + columnsSql + ");", null]);
-          queries.unshift(["INSERT INTO " + tableName + " SELECT " + selectColumns + " FROM " + tableName + "_bkp;", null]);
-          queries.unshift(["DROP TABLE " + tableName + "_bkp;", null]);
-          
-          persistence.executeQueriesSeq(tx, queries, nextCommand);
         });
+      }
+
+      this.version(function (currentVersion) {
+        for (var v = currentVersion; v > version; v--)
+          migrationsToRun.unshift(Migrator.migrations[v]);
+
+        if (migrationsToRun.length > 0) {
+          migrateOne();
+        } else if (callback) {
+          callback();
+        }
+      });
+    },
+
+    migrate: function (version, callback) {
+      if (arguments.length === 1) {
+        callback = version;
+        version = this.migrations.length - 1;
+      }
+
+      this.version(function (curVersion) {
+        if (curVersion < version)
+          Migrator.migrateUpTo(version, callback);
+        else if (curVersion > version)
+          Migrator.migrateDownTo(version, callback);
+        else
+          callback();
       });
     }
-    
-    Migration.prototype.addIndex = function(tableName, columnName, unique) {
-      var sql = 'CREATE ' + (unique === true ? 'UNIQUE' : '') + ' INDEX ' + tableName + '_' + columnName + ' ON ' + tableName + ' (' + columnName + ')';
-      this.executeSql(sql);
-    }
-    
-    Migration.prototype.removeIndex = function(tableName, columnName) {
-      var sql = 'DROP INDEX ' + tableName + '_' + columnName;
-      this.executeSql(sql);
-    }
-    
-    Migration.prototype.executeSql = function(sql, args) {
-      this.action(function(tx, nextCommand){
-        tx.executeSql(sql, args, nextCommand);
+  }
+
+  var Migration = function (version, body) {
+    this.version = version;
+    // TODO check if actions contains up and down methods
+    this.body = body;
+    this.actions = [];
+  };
+
+  Migration.prototype.executeActions = function (callback, customVersion) {
+    var actionsToRun = this.actions;
+    var version = (customVersion !== undefined) ? customVersion : this.version;
+
+    persistence.transaction(function (tx) {
+      function nextAction() {
+        if (actionsToRun.length == 0)
+          Migrator.setVersion(version, callback);
+        else {
+          var action = actionsToRun.pop();
+          action(tx, nextAction);
+        }
+      }
+
+      nextAction();
+    });
+  }
+
+  Migration.prototype.up = function (callback) {
+    if (this.body.up) this.body.up.apply(this);
+    this.executeActions(callback);
+  }
+
+  Migration.prototype.down = function (callback) {
+    if (this.body.down) this.body.down.apply(this);
+    this.executeActions(callback, this.version - 1);
+  }
+
+  Migration.prototype.createTable = function (tableName, callback) {
+    var table = new ColumnsHelper();
+
+    if (callback) callback(table);
+
+    var column;
+    var sql = 'CREATE TABLE ' + tableName + ' (id VARCHAR(32) PRIMARY KEY';
+    while (column = table.columns.pop())
+      sql += ', ' + column;
+
+    this.executeSql(sql + ')');
+  }
+
+  Migration.prototype.dropTable = function (tableName) {
+    var sql = 'DROP TABLE ' + tableName;
+    this.executeSql(sql);
+  }
+
+  Migration.prototype.addColumn = function (tableName, columnName, columnType) {
+    var sql = 'ALTER TABLE ' + tableName + ' ADD ' + columnName + ' ' + columnType;
+    this.executeSql(sql);
+  }
+
+  Migration.prototype.removeColumn = function (tableName, columnName) {
+    this.action(function (tx, nextCommand) {
+      var sql = 'select sql from sqlite_master where type = "table" and name == "' + tableName + '"';
+      tx.executeSql(sql, null, function (result) {
+        var columns = new RegExp("CREATE TABLE `\\w+` |\\w+ \\((.+)\\)").exec(result[0].sql)[1].split(', ');
+        var selectColumns = [];
+        var columnsSql = [];
+
+        for (var i = 0; i < columns.length; i++) {
+          var colName = new RegExp("((`\\w+`)|(\\w+)) .+").exec(columns[i])[1];
+          if (colName == columnName) continue;
+
+          columnsSql.push(columns[i]);
+          selectColumns.push(colName);
+        }
+        columnsSql = columnsSql.join(', ');
+        selectColumns = selectColumns.join(', ');
+
+        var queries = [];
+        queries.unshift(["ALTER TABLE " + tableName + " RENAME TO " + tableName + "_bkp;", null]);
+        queries.unshift(["CREATE TABLE " + tableName + " (" + columnsSql + ");", null]);
+        queries.unshift(["INSERT INTO " + tableName + " SELECT " + selectColumns + " FROM " + tableName + "_bkp;", null]);
+        queries.unshift(["DROP TABLE " + tableName + "_bkp;", null]);
+
+        persistence.executeQueriesSeq(tx, queries, nextCommand);
       });
-    }
-    
-    Migration.prototype.action = function(callback) {
-      this.actions.unshift(callback);
-    }
-    
-    var ColumnsHelper = function() {
-      this.columns = [];
-    }
-    
-    ColumnsHelper.prototype.text = function(columnName) {
-      this.columns.unshift(columnName + ' TEXT');
-    }
-    
-    ColumnsHelper.prototype.integer = function(columnName) {
-      this.columns.unshift(columnName + ' INT');
-    }
-    
-    ColumnsHelper.prototype.real = function(columnName) {
-      this.columns.unshift(columnName + ' REAL');
-    }
-    
-    ColumnsHelper.prototype['boolean'] = function(columnName) {
-      this.columns.unshift(columnName + ' BOOL');
-    }
-    
-    ColumnsHelper.prototype.date = function(columnName) {
-      this.columns.unshift(columnName + ' DATE');
-    }
-    
-    ColumnsHelper.prototype.json = function(columnName) {
-      this.columns.unshift(columnName + ' TEXT');
-    }
-    
-    // Makes Migrator and Migration available to tests
-    persistence.migrations = {};
-    persistence.migrations.Migrator = Migrator;
-    persistence.migrations.Migration = Migration;
-    persistence.migrations.init = function() { Migrator.setup.apply(Migrator, Array.prototype.slice.call(arguments, 0))};
-    
-    persistence.migrate = function() { Migrator.migrate.apply(Migrator, Array.prototype.slice.call(arguments, 0))};
-    persistence.defineMigration = function() { Migrator.migration.apply(Migrator, Array.prototype.slice.call(arguments, 0))};
-    
+    });
+  }
+
+  Migration.prototype.addIndex = function (tableName, columnName, unique, failOnError = true) {
+    var sql = 'CREATE ' + (unique === true ? 'UNIQUE' : '') + ' INDEX ' + tableName + '_' + columnName + ' ON ' + tableName + ' (' + columnName + ')';
+    this.executeSql(sql, null, failOnError);
+  }
+
+  Migration.prototype.removeIndex = function (tableName, columnName) {
+    var sql = 'DROP INDEX ' + tableName + '_' + columnName;
+    this.executeSql(sql);
+  }
+
+  Migration.prototype.executeSql = function (sql, args, failOnError = true) {
+    this.action(function (tx, nextCommand) {
+      let errCbck = null;
+      if (!failOnError) {
+        errCbck = (err) => {
+          console.log(err);
+          nextCommand();
+        };
+      }
+      tx.executeSql(sql, args, nextCommand, errCbck);
+    });
+  }
+
+  Migration.prototype.action = function (callback) {
+    this.actions.unshift(callback);
+  }
+
+  var ColumnsHelper = function () {
+    this.columns = [];
+  }
+
+  ColumnsHelper.prototype.text = function (columnName) {
+    this.columns.unshift(columnName + ' TEXT');
+  }
+
+  ColumnsHelper.prototype.integer = function (columnName) {
+    this.columns.unshift(columnName + ' INT');
+  }
+
+  ColumnsHelper.prototype.real = function (columnName) {
+    this.columns.unshift(columnName + ' REAL');
+  }
+
+  ColumnsHelper.prototype['boolean'] = function (columnName) {
+    this.columns.unshift(columnName + ' BOOL');
+  }
+
+  ColumnsHelper.prototype.date = function (columnName) {
+    this.columns.unshift(columnName + ' DATE');
+  }
+
+  ColumnsHelper.prototype.json = function (columnName) {
+    this.columns.unshift(columnName + ' TEXT');
+  }
+
+  // Makes Migrator and Migration available to tests
+  persistence.migrations = {};
+  persistence.migrations.Migrator = Migrator;
+  persistence.migrations.Migration = Migration;
+  persistence.migrations.init = function () { Migrator.setup.apply(Migrator, Array.prototype.slice.call(arguments, 0)) };
+
+  persistence.migrate = function () { Migrator.migrate.apply(Migrator, Array.prototype.slice.call(arguments, 0)) };
+  persistence.defineMigration = function () { Migrator.migration.apply(Migrator, Array.prototype.slice.call(arguments, 0)) };
+
 }());
 ;
 /*
@@ -5265,9 +5278,9 @@ angular.module('ion-autocomplete', []).directive('ionAutocomplete', [
             }
 
             // adding an extra "_" on index name to be the same pattern as indexes created from persistence.js hasOne and hasMany
-            Migration.prototype.addIndex = function (tableName, columnName, unique, indexName) {
+            Migration.prototype.addIndex = function (tableName, columnName, unique, indexName, failOnError = true) {
                 const sql = swdbDAO.addIndexQuery(tableName, columnName, unique, indexName);
-                this.executeSql(sql);
+                this.executeSql(sql, null, failOnError);
             }
         }
 
@@ -5333,7 +5346,7 @@ angular.module('ion-autocomplete', []).directive('ionAutocomplete', [
 
             // tag has max length = 26 characters
             addMigration(tag, migration) {
-                console.log(`adding migration ${tag}`)
+                // console.log(`adding migration ${tag}`)
                 migration.id = this.stringId + "-" + (this.tag || "") + "-" + (tag || "");
                 this.migrations.push(migration);
             }
@@ -5540,7 +5553,7 @@ angular.module('ion-autocomplete', []).directive('ionAutocomplete', [
             if (mainListSchema.applicationName === "todayworkorder") {
                 duplicateQuery += ` and b.dateindex02 <= ${tomorrowTime}`
             }
-        
+
             else if (mainListSchema.applicationName === "pastworkorder"){
                 duplicateQuery += ` and b.dateindex02 < ${todayTime}`
             }
@@ -5603,7 +5616,7 @@ angular.module('ion-autocomplete', []).directive('ionAutocomplete', [
                 additionalJoins.push(doBuildLeftJoin(listSchema, entity));
             });
 
-            return { additionalJoins, extraProjectionFields: Array.from(extraProjectionFields.values()) };
+            return { additionalJoins, extraProjectionFields: Array.from(extraProjectionFields.values()),leftJoinEntities: Array.from(leftJoinEntities) };
         }
 
 
@@ -5611,7 +5624,7 @@ angular.module('ion-autocomplete', []).directive('ionAutocomplete', [
 
         //#region Service Instance
         const service = {
-            buildJoinParameters,
+            buildJoinParameters
         };
         return service;
         //#endregion
@@ -6216,7 +6229,7 @@ angular.module('ion-autocomplete', []).directive('ionAutocomplete', [
             dateindex03: "DATE"
         });
 
-        entities.CompositionDataEntry.insertionQueryPattern = "insert into CompositionDataEntry (application,datamap,isDirty,remoteId,rowstamp,id,'textindex01','textindex02','textindex03','textindex04','textindex05','numericindex01','numericindex02','dateindex01','dateindex02','dateindex03') values (:p0,:p1,0,:p2,:p3,:p4,:p5,:p6,:p7,:p8,:p9,:p10,:p11,:p12,:p13,:p14)";
+        entities.CompositionDataEntry.insertionQueryPattern = "insert or replace into CompositionDataEntry (application,datamap,isDirty,remoteId,rowstamp,id,'textindex01','textindex02','textindex03','textindex04','textindex05','numericindex01','numericindex02','dateindex01','dateindex02','dateindex03') values (:p0,:p1,0,:p2,:p3,:p4,:p5,:p6,:p7,:p8,:p9,:p10,:p11,:p12,:p13,:p14)";
         entities.CompositionDataEntry.updateQueryPattern = "update CompositionDataEntry set datamap='{0}' rowstamp={1} where remoteId='{2}' and applicaton='{3}'";
         entities.CompositionDataEntry.syncdeletionQuery = "delete from CompositionDataEntry where application = '{0}' and remoteId in ({1})";
 
@@ -6333,7 +6346,7 @@ angular.module('ion-autocomplete', []).directive('ionAutocomplete', [
         entities.DataEntry.insertOrReplacePattern = "INSERT OR REPLACE INTO DataEntry (application,datamap,pending,isDirty,remoteId,rowstamp,id,textindex01,textindex02,textindex03,textindex04,textindex05,numericindex01,numericindex02,dateindex01,dateindex02,dateindex03) values (?,?,0,0,?,?,?,?,?,?,?,?,?,?,?,?,?)";
 
         entities.DataEntry.deleteQueryPattern = "delete from DataEntry where remoteId in ({0}) and application='{1}'";
-        entities.DataEntry.deleteInIdsStatement = "delete from DataEntry where id in(?) and application=?";
+        entities.DataEntry.deleteInIdsStatement = "delete from DataEntry where id in ({0}) and application=?";
         entities.DataEntry.deleteLocalStatement = "delete from DataEntry where id=? and application=?";
 
         entities.DataEntry.updateLocalPattern = "update DataEntry set 'datamap'=?,'isDirty'=1,'textindex01'=?,'textindex02'=?,'textindex03'=?,'textindex04'=?,'textindex05'=?,'numericindex01'=?,'numericindex02'=?,'dateindex01'=?,'dateindex02'=?,'dateindex03'=? where id =?";
@@ -6369,7 +6382,7 @@ angular.module('ion-autocomplete', []).directive('ionAutocomplete', [
             status: 'TEXT',
             numberofdownloadeditems: "INT",
             numberofdownloadedsupportdata: "INT",
-            clientOperationId: "INT",
+            clientOperationId: "TEXT",
             hasProblems: "BOOL",
             metadatachange: "BOOL",
             items: "INT" // batches.items.length
@@ -6460,12 +6473,12 @@ angular.module('ion-autocomplete', []).directive('ionAutocomplete', [
         migrationGroup.addMigration("table OptionFieldData", {
             up: function () {
                 this.createTable("OptionFieldData", (t) => {
-                     t.text("application");
-                     t.text("schema");
-                     t.text("providerAttribute");
-                     t.text("optionkey");
-                     t.text("optionvalue");
-                     t.json("extraprojectionvalues");
+                    t.text("application");
+                    t.text("schema");
+                    t.text("providerAttribute");
+                    t.text("optionkey");
+                    t.text("optionvalue");
+                    t.json("extraprojectionvalues");
                 });
             },
             down: function () {
@@ -6490,7 +6503,7 @@ angular.module('ion-autocomplete', []).directive('ionAutocomplete', [
                     t.date("dateindex02");
                     t.date("dateindex03");
                 });
-                
+
             },
             down: function () {
                 this.dropTable("AssociationData");
@@ -6608,7 +6621,7 @@ angular.module('ion-autocomplete', []).directive('ionAutocomplete', [
                     t.date("dateindex02");
                     t.date("dateindex03");
                 });
-                this.addIndex("DataEntry", ["application","remoteid"], true);
+                this.addIndex("DataEntry", ["application", "remoteid"], true);
             },
             down: function () {
                 this.dropTable("DataEntry");
@@ -6818,6 +6831,12 @@ angular.module('ion-autocomplete', []).directive('ionAutocomplete', [
         migrationGroup.addMigration("add clientopreationid for syncoperation", {
             up: function () {
                 this.addColumn("SyncOperation", "clientoperationid", "text");
+            }
+        });
+
+        migrationGroup.addMigration("add indexes for composition", {
+            up: function () {
+                this.addIndex("CompositionDataEntry", ["application", "remoteid"], true,null,false);
             }
         });
 
@@ -7270,9 +7289,11 @@ angular.module('ion-autocomplete', []).directive('ionAutocomplete', [
 
 })(modules);;
 const modalShown = "sw.modal.show";
+const modalClosed = "sw.modal.closed";
 const HideModal = "sw.modal.hide";
 const crudSaved = "sw.crud.detail.savecompleted";
 const CrudSubmitData = "sw.crud.detail.submit";
+const FormDoubleClicked = "sw.crud.detail.doubleclick";
 
 const BodyRendered = "sw.crud.body.rendered";
 
@@ -7425,6 +7446,8 @@ const COMPOSITION_BATCH_ADD_MULTIPLE = "sw.crud.composition.batch.add.multiple";
 
 const FORCE_RESIZE = "sw.layout.forceresize";
 
+const REEVAL_DISPLAYABLES = "sw.layout.dynforms.reevaldisplayables";
+
 
 
 //#endregion
@@ -7435,6 +7458,10 @@ class JavascriptEventConstants {
 
     static get ModalShown() {
         return modalShown;
+    }
+
+    static get ModalClosed() {
+        return modalClosed;
     }
 
     //#region print
@@ -7563,6 +7590,10 @@ class JavascriptEventConstants {
         return CrudSubmitData;
     }
 
+    static get FormDoubleClicked() {
+        return FormDoubleClicked;
+    }
+
 
     //#region association
 
@@ -7663,6 +7694,11 @@ class JavascriptEventConstants {
 
     static get ForceResize() {
         return FORCE_RESIZE;
+    }
+
+
+    static get ReevalDisplayables() {
+        return REEVAL_DISPLAYABLES;
     }
 
     //#endregion
@@ -9705,7 +9741,7 @@ if (typeof JSON.retrocycle !== "function") {
 
         getI18nInputLabel: function (fieldMetadata, schema, avoidColon=false) {
             var label = this.getI18nLabel(fieldMetadata, schema);
-            if (label === "") {
+            if (label === "" || label == null) {
                 return "";
             }
             const lastChar = label.charAt(label.length - 1);
@@ -9866,6 +9902,8 @@ if (typeof JSON.retrocycle !== "function") {
                 }
             }
         };
+
+
 
         //#endregion
 
@@ -10130,6 +10168,14 @@ if (typeof JSON.retrocycle !== "function") {
             return flattenDisplayables(schema.displayables);
         }
 
+        function allNonHiddenDisplayables(datamap, schema) {
+            return flattenDisplayables(schema.displayables).filter(f => {
+                return !fieldService.isFieldHidden(datamap, schema.applicationName, f);
+            });
+        }
+
+
+
         function getSchema(application, schemaId) {
             const cachedSchema = schemaCacheService.getCachedSchema(application, schemaId);
             if (cachedSchema) {
@@ -10149,6 +10195,7 @@ if (typeof JSON.retrocycle !== "function") {
 
         return {
             areTheSame: areTheSame,
+            allNonHiddenDisplayables,
             buildApplicationKey: buildApplicationKey,
             buildApplicationMetadataSchemaKey: buildApplicationMetadataSchemaKey,
             getId,
@@ -10199,7 +10246,7 @@ if (typeof JSON.retrocycle !== "function") {
                         return !isFieldHidden(datamap, schema, e);
                     }).length === 0)) {
 
-                var enableControlFlag = fieldMetadata.header != null &&
+                const enableControlFlag = fieldMetadata.header != null &&
                     fieldMetadata.attribute !== null &&
                     fieldMetadata.header.parameters["enablecontrol"] === "true";
 
@@ -10219,7 +10266,7 @@ if (typeof JSON.retrocycle !== "function") {
         };
 
         var isIdFieldAndNotReadOnly = function (fieldMetadata, schema) {
-            if (!isIdField(fieldMetadata, schema)) {
+            if (!isIdField(fieldMetadata, schema) || fieldMetadata.showExpression === "!false") {
                 return false;
             }
             return (schema.stereotype == "Detail" && schema.mode == "input" || schema.stereotype == "DetailNew") && !fieldMetadata.isReadOnly;
@@ -10478,7 +10525,185 @@ if (typeof JSON.retrocycle !== "function") {
                 return -1;
             },
 
-            getVisibleDisplayableIdxByKey: function (schema, attribute, ignoreCache = false, includeSections = false) {
+            replaceOrRemoveDisplayableByKey: function (displayableContainer, itemOrKey, newdisplayable) {
+                /// <summary>
+                /// Get the index for the supplied attribute key, skipping hidden fields.
+                /// </summary>
+                if (!displayableContainer) {
+                    return false;
+                }
+
+                const displayables = displayableContainer.displayables;
+                var idxToRemove = -1;
+                const innerContainers = [];
+                for (let i = 0; i < displayables.length; i++) {
+                    const item = displayables[i];
+                    if (!isString(itemOrKey) && item === itemOrKey) {
+                        idxToRemove = i;
+                        break;
+                    }
+                    else if (item.attribute === itemOrKey || item.target === itemOrKey || item.role === itemOrKey) {
+                        idxToRemove = i;
+                        break;
+                    }
+                    if (item.displayables) {
+                        innerContainers.push(item);
+                    }
+                }
+
+                if (idxToRemove !== -1) {
+                    if (!newdisplayable) {
+                        displayables.splice(idxToRemove, 1);
+                    } else {
+                        displayables[idxToRemove] = newdisplayable;
+                    }
+
+                    return true;
+                }
+
+                for (let i = 0; i < innerContainers.length; i++) {
+                    const container = innerContainers[i];
+                    const removed = this.replaceOrRemoveDisplayableByKey(container, itemOrKey, newdisplayable);
+                    if (removed) {
+                        return true;
+                    }
+                }
+                return false;
+
+            },
+
+
+            locateFirstOuterVerticalSection: function (container, currentField) {
+                const displayables = container.displayables;
+                for (let i = 0; i < displayables.length; i++) {
+                    const displayable = displayables[i];
+                    if (displayable.displayables) {
+                        const result = this.locateOuterSection(container, currentField);
+                        if (!result) {
+                            //field wasn´t present at this given section
+                            continue;
+                        }
+
+                        if (result.found) {
+                            //just returning from inner call invocations what was already found
+                            return result;
+                        }
+
+                        if (result.container.orientation !== "horizontal") {
+                            //either a vertical section or the root schema found, returning it!
+                            return { container: result.container, found: true, idx: result.idx };
+                        }
+                        //searching the parent of the given section
+                        return this.locateFirstOuterVerticalSection(container, result.container);
+
+                    }
+                    if (displayable === currentField) {
+                        return { container, idx: i, found: false };
+                    }
+
+                }
+                //nothing was found
+                return { container, idx: i, found: true };
+            },
+
+
+            locateCommonContainer: function (container, fields) {
+                const results = new Set();
+                let minIdx = 1000;
+
+                for (let i = 0; i < fields.length; i++) {
+                    const field = fields[i];
+                    const outerContainerResult = this.locateOuterSection(container, field);
+                    const outerContainer = outerContainerResult ? outerContainerResult.container : null;
+                    minIdx = outerContainerResult.idx < minIdx ? outerContainerResult.idx : minIdx;
+                    results.add(outerContainer);
+                }
+                const arr = Array.from(results);
+
+                if (results.size === 1) {
+                    const resultContainer = arr[0];
+                    if (resultContainer === container) {
+                        //schema was hit as the common container
+                        return { container, idx: minIdx }
+                    }
+
+                    const idx = this.getVisibleDisplayableIdxByKey(container, resultContainer, false, true);
+                    return { container: resultContainer, idx }
+                }
+                return this.locateCommonContainer(container, arr);
+
+            },
+
+            /**
+             * Given a container (schema or section) and a field, returns the container that encloses the given field (either a section or the root schema itself)
+             * @param {} container 
+             * @param {} currentField 
+             * @returns {} 
+             */
+            locateOuterSection: function (container, currentField) {
+                if (currentField && currentField.schemaId) {
+                    //no point in searching an outer section for a schema
+                    return { container: currentField, idx: 0 };
+                }
+
+                const displayables = container.displayables;
+                for (let i = 0; i < displayables.length; i++) {
+                    const displayable = displayables[i];
+                    if (displayable.displayables) {
+                        const result = this.locateOuterSection(displayable, currentField);
+                        if (result) {
+                            if (result.fieldLoop === true) {
+                                //the field was already found, and now we return the container itself
+                                return { idx: result.idx, fieldLoop: false, container: displayable };
+                            }
+                            return result;
+                        }
+                    }
+                    if (displayable === currentField) {
+                        return { fieldLoop: true, idx: i, container };
+                    }
+
+                }
+                //field not found on the given container
+                return null;
+
+            },
+
+            injectServerTypesIntoDisplayables: function (container) {
+                this.getLinearDisplayables(container, true, true, (displayable) => {
+                    const type = `softwrench.sW4.Shared2.Metadata.Applications.Schema.${displayable.type}, softwrench.sw4.Shared2`;
+                    const associationOptionType = `softwrench.sw4.Shared2.Data.Association.AssociationOption, softwrench.sw4.Shared2`;
+                    //TODO: updgrade newtonsoft.json so that this is no longer needed
+                    displayable["$type"] = type;
+                    if (displayable.type === "TableDefinition") {
+                        var partialFakeContainerDisplayablesResult = [];
+                        displayable.rows.forEach(row => {
+                            var partialFakeContainerDisplayables = [];
+                            row.forEach(column => {
+                                partialFakeContainerDisplayables.push(column);
+                            });
+                            var ob = { displayables: partialFakeContainerDisplayables };
+                            this.injectServerTypesIntoDisplayables(ob);
+                            partialFakeContainerDisplayablesResult.push(ob.displayables);
+                        });
+                        displayable.rows = partialFakeContainerDisplayablesResult;
+
+                    }
+                    if (displayable.type === "OptionField" && displayable.options) {
+                        const injectedOptions = [];
+                        displayable.options.forEach(o => {
+                            o["$type"] = associationOptionType;
+                            injectedOptions.push(Object.assign({ "$type": associationOptionType }, o));
+                        });
+                        displayable.options = injectedOptions;
+                    }
+
+                    return Object.assign({ "$type": type }, displayable);
+                    //                    return displayable;
+                });
+            },
+
+            getVisibleDisplayableIdxByKey: function (schema, attributeOrField, ignoreCache = false, includeSections = false) {
                 /// <summary>
                 /// Get the index for the supplied attribute key, skipping hidden fields.
                 /// </summary>
@@ -10489,21 +10714,41 @@ if (typeof JSON.retrocycle !== "function") {
                 const results = this.getLinearDisplayables(schema, ignoreCache, includeSections);
                 for (let i = 0; i < results.length; i++) {
                     const result = results[i];
-                    if (result.associationKey === attribute || result.target === attribute || result.attribute === attribute && !result.isHidden) {
+                    if (!isString(attributeOrField) && result === attributeOrField) {
+                        return i;
+                    }
+                    else if (result.associationKey === attributeOrField || result.target === attributeOrField || result.attribute === attributeOrField && !result.isHidden) {
                         return i;
                     }
                 }
                 return -1;
             },
 
-            getLinearDisplayables: function (container, ignoreCache = false, includeSections = false) {
+            sortBySchemaIdx: function (schema, fields) {
+                const idxArray = [];
+                fields.forEach(field => {
+                    const idx = this.getVisibleDisplayableIdxByKey(schema, field);
+                    idxArray.push({ idx, field });
+                });
+
+                idxArray.sort((a, b) => {
+                    return a.idx - b.idx;
+                });
+
+                return idxArray.map(a => a.field);
+
+            },
+
+
+
+            getLinearDisplayables: function (container, ignoreCache = false, includeSections = false, lambdaFn = null) {
                 /// <summary>
                 /// gets a list of all the displayables of the current schema/section in a linear mode, excluding any sections/tabs themselves.
                 /// </summary>
                 /// <param name="container">either a schema or a section</param>
                 /// <returns type=""></returns>
                 container.jscache = container.jscache || {};
-                if (container.jscache.alldisplayables && !ignoreCache) {
+                if (container.jscache.alldisplayables && !ignoreCache && !lambdaFn) {
                     return container.jscache.alldisplayables;
                 }
                 const displayables = container.displayables;
@@ -10512,13 +10757,21 @@ if (typeof JSON.retrocycle !== "function") {
                     const displayable = displayables[i];
                     if (displayable.displayables) {
                         if (includeSections) {
+                            if (lambdaFn) {
+                                displayables[i] = lambdaFn(displayables[i]);
+                            }
                             result.push(displayable);
+
                         }
                         //at this point displayable is a section, calling recursively
-                        result = result.concat(this.getLinearDisplayables(displayable, ignoreCache, includeSections));
+                        result = result.concat(this.getLinearDisplayables(displayable, ignoreCache, includeSections, lambdaFn));
 
                     } else {
+                        if (lambdaFn) {
+                            displayables[i] = lambdaFn(displayables[i]);
+                        }
                         result.push(displayable);
+
                     }
                 }
                 container.jscache.alldisplayables = result;
@@ -11566,6 +11819,8 @@ if (typeof JSON.retrocycle !== "function") {
                 if (!showTime) {
                     dateFormat = dateFormat.replace('HH:mm', '');
                     dateFormat =dateFormat.replace('hh:mm', '');
+                    dateFormat =dateFormat.replace('a', '');
+                   
                 }
                 if (!showMinutes) {
                     dateFormat = dateFormat.replace(':mm', ':00');
@@ -11578,6 +11833,7 @@ if (typeof JSON.retrocycle !== "function") {
                     //the format and the showtime flag are somehow conflitant, let´s adjust the format
                     dateFormat = dateFormat.replace('HH:mm', '');
                     dateFormat = dateFormat.replace('hh:mm', '');
+                    dateFormat =dateFormat.replace('a', '');
                 }
                 if (!showMinutes) {
                     dateFormat = dateFormat.replace(':mm', ':00');
@@ -11809,11 +12065,13 @@ modules.rootCommons.service('restService', ["$http", "$log","$q", "contextServic
     "FirstSolarEmail",
     "FirstSolarWpGenericEmail",
     "UmcRequestController",
+    "SwgasRequestController",
     "UserSetup/DefinePassword",
     "UserSetup/DoSetPassword",
     "UserSetupWebApi/ForgotPassword",
     "UserSetupWebApi/SendActivationEmail",
-    "UserSetupWebApi/NewUserRegistration"
+    "UserSetupWebApi/NewUserRegistration",
+    "FSDBackendController"
 
     ];
 
@@ -11833,7 +12091,12 @@ modules.rootCommons.service('restService', ["$http", "$log","$q", "contextServic
         getActionUrl: function (controller, action, parameters) {
             action = (action === undefined || action == null) ? 'get' : action;
             const params = parameters == null ? {} : parameters;
-            const serverUrl = contextService.getFromContext("serverurl");
+            let serverUrl = contextService.getFromContext("serverurl");
+            if (params["_customurl"]) {
+                serverUrl = params["_customurl"];
+                delete params["_customurl"];
+            }
+            
             if (serverUrl) {
                 return serverUrl + "/api/generic/" + controller + "/" + action + "?" + $.param(params, false);
             }
@@ -13094,7 +13357,7 @@ modules.webcommons.service('expressionService', ["$rootScope", "$log", "contextS
                     evaluatedClass["$inject"] = scriptInjections;
                 }
 
-                log.info(`registering script ${scriptName}`);
+                log.warn(`registering script ${scriptName}`);
 
                 return $provide.service(scriptName, evaluatedClass);
             }
@@ -13273,6 +13536,7 @@ modules.webcommons.service('expressionService', ["$rootScope", "$log", "contextS
             }
 
         }
+
 
         function fetchSchema(applicationName, schemaId) {
             const schema = getCachedSchema(applicationName, schemaId);
@@ -13715,6 +13979,9 @@ class LogHelper {
             sessionStorage[`log_${items}`] = 'warn';
         }
     }
+
+
+
 }
 
 
@@ -13761,6 +14028,30 @@ window.swlog = new LogHelper();
         }
         return true;
     }
+
+    function formatToMessage(arg) {
+        if (arg instanceof Error) {
+            if (arg.stack) {
+                arg = (arg.message && arg.stack.indexOf(arg.message) < 0)
+                    ? `Error: ${arg.message}\n${arg.stack}`
+                    : arg.stack;
+            } else if (arg.sourceURL) {
+                arg = `${arg.message}\n${arg.sourceURL}:${arg.line}`;
+            }
+            return arg;
+        }
+        if (!angular.isString(arg)) {
+            try {
+                const jsonValue = JSON.stringify(JSON.decycle(arg));
+                return jsonValue;
+            } catch (err) {
+                return arg;
+            }
+            
+        }
+        return arg;
+    }
+
 
     function getContextLevel(context, relatedContexts) {
         const methodLogLevel = sessionStorage[`log_${context}`];
@@ -13827,9 +14118,13 @@ window.swlog = new LogHelper();
                 if (!isEnabled) {
                     return [];
                 }
-                const currentargs = [].slice.call(arguments);
+
+                /* const message = [].slice.call(args).map(formatToMessage).join(" "); */
+
+                const currentargs = [].slice.call(arguments).map(formatToMessage);
                 const contextarg = [`[${level.toUpperCase()}] ${window.moment().format("DD/MM/YYYY hh:mm:ss:SSS a")}::[${context}]> `];
                 const modifiedArguments = contextarg.concat(currentargs);
+
 
                 loggingFunc.apply(null, modifiedArguments);
 
@@ -14511,7 +14806,7 @@ var softwrench = angular.module('softwrench', ['ionic', 'ion-autocomplete', 'ngC
 
 })(window);
 ;
-window.lastreleasebuildtime = "1511953745639";;
+window.lastreleasebuildtime = "1518524641526";;
 (function (angular, mobileServices) {
     "use strict";
 
@@ -14639,6 +14934,14 @@ window.lastreleasebuildtime = "1511953745639";;
         //    return scope;
         //}
         //return scope.$parent;
+    };
+
+    window.buildIdsString=  (ids) => {
+        var result = [];
+        angular.forEach(ids, function (id) {
+            result.push("'{0}'".format(id));
+        });
+        return result;
     };
 
     window.Validate = Object.freeze(class {
@@ -15495,13 +15798,15 @@ class ConfigurationKeys {
             }
 
             function initializeList() {
-                $scope.crudlist.moreItemsAvailable = true;
+                
 
                 const context = crudContextHolderService.getCrudContext();
                 context.itemlist = laborThenDirtyItemsFirst(context.itemlist);
 
                 // getting references to elements instead of to the whole list
                 $scope.crudlist.items = context.itemlist.map(i => i);
+                //do not allow infinite scroll for small subset of items preventing a second query to take place upon grid loading
+                $scope.crudlist.moreItemsAvailable = $scope.crudlist.items.length > 4;
             }
 
             function init() {
@@ -16204,9 +16509,14 @@ class ConfigurationKeys {
                 sessionStorage.loglevel = callback.item.value;
                 if (callback.item.value.equalIc('debug')) {
                     persistence.debug = true;
+                    $scope.vm.logsql = true;
                 } else {
                     persistence.debug = false;
                 }
+            }
+
+            $scope.changeLogSQl = function (){
+                persistence.debug = $scope.vm.logsql;
             }
 
             $scope.sendLogFiles = function() {
@@ -16418,6 +16728,7 @@ class ConfigurationKeys {
                             loadingService.hide();
                             attachmentDataSynchronizationService.downloadAttachments();
                             indexCreatorService.createIndexAfterFirstSync();
+                            menuModelService.updateAppsCount();
                             if (!!contextService.get("restartneeded")) {
                                 //only if there are dynamic scripts loaded
                                 contextService.deleteFromContext("restartneeded");
@@ -16500,7 +16811,7 @@ class ConfigurationKeys {
         //#region Utils
 
         const countAll = app => dao.countByQuery("DataEntry", `application='${app}'`);
-        
+
         const countPending = app => dao.countByQuery("DataEntry", `application='${app}' and pending = 1`);
 
         const countDirty = app => dao.countByQuery("DataEntry", `application='${app}' and isDirty=1 and (hasProblem = 0 or hasProblem is null)`);
@@ -16515,7 +16826,10 @@ class ConfigurationKeys {
                 .then(a => {
                     const titleLookupTable = _.indexBy(a, "name");
                     return dao.executeStatement("select application,count(id) from AssociationData group by application")
-                        .then(c => c.map(i => ({ application: i.application, count: i["count(id)"], title: titleLookupTable[i.application].title })));
+                        .then(c => c
+                            //excluding applications which are not present. TODO: delete them. Scenario, removing a profile from an existing user
+                            .filter(i => titleLookupTable[i.application])
+                            .map(i => ({ application: i.application, count: i["count(id)"], title: titleLookupTable[i.application].title })));
                 });
         }
 
@@ -16592,7 +16906,7 @@ class ConfigurationKeys {
             return $q.all([topLevelApplicationState(), associationState()])
                 .spread((applications, associations) => ({ applications, associations }));
         }
-        
+
         /**
          * Fetches the app's configuration (server and client info).
          * 
@@ -16606,7 +16920,7 @@ class ConfigurationKeys {
                     'server': serverConfig,
                     'client': { 'version': appVersion }
                 })
-            );
+                );
         }
 
         /**
@@ -18057,16 +18371,13 @@ class ConfigurationKeys {
                     const listSchema = crudContextHolderService.currentListSchema();
                     const appName = crudContextHolderService.currentApplicationName();
 
-                    let extraWhereClause = "1=1";
-                    if (quickSearch.value) {
-                        extraWhereClause += ' and `root`.datamap like \'%:"{0}%\''.format(quickSearch.value);
-                    }
+                    const joinObj = queryListBuilderService.buildJoinParameters(listSchema);
+
+                    let extraWhereClause = crudSearchService.handleQuickSearch(quickSearch,joinObj);
 
                     extraWhereClause += searchIndexService.buildSearchQuery(appName, listSchema, gridSearch);
-
+                    
                     let baseQuery = menuModelService.buildListQuery(crudContext.currentApplicationName, crudContext.currentMenuId, extraWhereClause);
-
-                    const joinObj = queryListBuilderService.buildJoinParameters(listSchema);
 
                     if (internalListContext.lastPageLoaded === 1) {
                         const countQuery = baseQuery;
@@ -18436,7 +18747,7 @@ class ConfigurationKeys {
             }
 
             // sets the pre selected values from a option filter
-            this.setPreSelectedValue = function(gridSearch, filter) {
+            this.setPreSelectedValue = function (gridSearch, filter) {
                 if (filter.type !== "MetadataOptionFilter") {
                     return;
                 }
@@ -18450,7 +18761,7 @@ class ConfigurationKeys {
                     searchable.optionChanged(filter.preselected);
                     return;
                 }
-                
+
                 const preselectedValues = [];
                 angular.forEach(searchable.options, option => {
                     if (option.preSelected) {
@@ -18475,6 +18786,31 @@ class ConfigurationKeys {
                     this.setPreSelectedValue(gridSearch, filter);
                 });
             }
+        }
+
+
+        handleQuickSearch(quickSearch,joinObj) {
+            if (!quickSearch || !quickSearch.value) {
+                return "1=1";
+            }
+
+            const value = quickSearch.value;
+
+            let quickSearchWc = '(`root`.datamap like \'%:"%{0}%\''.format(value);
+            quickSearchWc += ' or `root`.textindex01 like "%{0}%"'.format(value);
+            quickSearchWc += ' or `root`.textindex02 like "%{0}%" '.format(value);
+
+            if (!!joinObj.leftJoinEntities && joinObj.leftJoinEntities.length > 0) {
+                joinObj.leftJoinEntities.forEach(item => {
+                    //searching through related joined indexes
+                    quickSearchWc += ' or `{0}`.textindex01 like "%{1}%"'.format(item, value);
+                    quickSearchWc += ' or `{0}`.textindex02 like "%{1}%" '.format(item, value);
+                })
+            }
+
+            quickSearchWc += ")";
+            return quickSearchWc;
+
         }
 
         initGridSearch() {
@@ -19181,6 +19517,7 @@ class ConfigurationKeys {
 
         // builds an array of index values parameters to be stored on client db
         const buildIndexes = function (textIndexes, numericIndexes, dateIndexes, newDataMap) {
+
             const indexesData = {
                 t1: null,
                 t2: null,
@@ -19805,7 +20142,7 @@ class ConfigurationKeys {
 (function (angular, _) {
     "use strict";
 
-    function laborService(dao, securityService, localStorageService, crudContextService, $ionicPopup, $q, $log, offlineSchemaService, offlineSaveService, $rootScope, menuModelService,fsLaborOfflineService) {
+    function laborService(dao, securityService, localStorageService, crudContextService, $ionicPopup, $q, $log, offlineSchemaService, offlineSaveService, $rootScope, menuModelService,fsLaborOfflineService, metadataModelService) {
         //#region Utils
 
         const truncateDecimal = value => parseFloat(value.toFixed(2));
@@ -19868,7 +20205,20 @@ class ConfigurationKeys {
 
         const getLabTransDetailSchema = () => crudContextService.currentCompositionSchemaById("labtrans", "detail");
 
-        const getLabTransMetadata = () => crudContextService.currentCompositionTabByName("labtrans");
+        const getLabTransMetadata = () => {
+            const laborMetadata = crudContextService.currentCompositionTabByName("labtrans");
+            if (laborMetadata){
+                return $q.when(laborMetadata);
+            }
+            const metadataDef = metadataModelService.getCompositionByName("labtrans");
+            //this is an adaptation since the next layers expected to receive the Composition displable definition, rather than the DB application definition
+            //TODO: make it properly
+            metadataDef.attribute = metadataDef.data.role;
+            metadataDef.associationKey = metadataDef.data.role + "_";
+
+            return $q.when(metadataDef);
+
+        }
 
         const insertTsLaborDataEntry = (labor, datamap, runningLabor = false) =>{
             //TODO: check for client
@@ -19912,10 +20262,9 @@ class ConfigurationKeys {
         }
 
         function saveLabor(parent, labor, inCurrentParent, saveCustomMessage,showConfirmationMessage, starting) {
-            const application = crudContextService.currentApplicationName();
-            const laborMetadata = getLabTransMetadata();
-
-            return offlineSaveService.addAndSaveComposition(application, parent, labor, laborMetadata, saveCustomMessage, showConfirmationMessage)
+            const application = parent != null? parent.application : crudContextService.currentApplicationName();
+            return getLabTransMetadata().then(laborMetadata=>{
+                return offlineSaveService.addAndSaveComposition(application, parent, labor, laborMetadata, saveCustomMessage, showConfirmationMessage)
                 .then(savedParent => {
                     const context = crudContextService.getCrudContext();
                     if (!!inCurrentParent) {
@@ -19928,6 +20277,8 @@ class ConfigurationKeys {
                     }
                     return labor;
                 }).then(insertTsLaborDataEntry(labor,parent.datamap,starting));
+            })
+     
         }
 
         function doStartLaborTransaction() {
@@ -20208,7 +20559,7 @@ class ConfigurationKeys {
     //#region Service registration
     angular.module("sw_mobile_services")
         .factory("laborService",
-        ["swdbDAO", "securityService", "localStorageService", "crudContextService", "$ionicPopup", "$q", "$log", "offlineSchemaService", "offlineSaveService", "$rootScope", "menuModelService","fsLaborOfflineService", laborService]);
+        ["swdbDAO", "securityService", "localStorageService", "crudContextService", "$ionicPopup", "$q", "$log", "offlineSchemaService", "offlineSaveService", "$rootScope", "menuModelService","fsLaborOfflineService","metadataModelService", laborService]);
     //#endregion
 
 })(angular, _);
@@ -20248,7 +20599,7 @@ class ConfigurationKeys {
 (function (angular, _) {
     "use strict";
 
-    function materialService(dao) {
+    function materialService(dao, crudContextHolderService) {
         //#region Utils
 
         const cleanItemData = (datamap) => {
@@ -20273,7 +20624,7 @@ class ConfigurationKeys {
          * textindex03 = offlinelocation.status
          */
         const getStoreRoomWhereClause = function() {
-            return "textindex02='STOREROOM' and textindex03='OPERATING' and textindex01 in (select textindex02 from AssociationData where application='offlineinventory' and textindex01 = @itemnum and textindex03 = @category)";
+            return "textindex02='STOREROOM' and textindex03='OPERATING'";
         };
 
         /**
@@ -20283,8 +20634,13 @@ class ConfigurationKeys {
          * textindex02 = offlineinventory.location
          * textindex03 = offlineinventory.category
          */
-        const getAvailableItemsWhereClause = () =>
-            "textindex01 in (select textindex01 from AssociationData where application='offlineinventory' and textindex02 in (select textindex01 from AssociationData where application='offlinelocation' and textindex02='STOREROOM' and textindex03='OPERATING') and textindex03 = @category)";
+        const getAvailableItemsWhereClause = () => {
+            const dm = crudContextHolderService.getCompositionDetailItem();
+            if(dm.category !== "ANY"){
+                return "textindex01 in (select textindex01 from AssociationData where application='offlineinventory' and textindex02 = @storeloc and textindex03 = @category)"
+            }
+            return "textindex01 in (select textindex01 from AssociationData where application='offlineinventory' and textindex02 = @storeloc)"
+        };
         
         /**
          * Clears datamap.
@@ -20316,7 +20672,6 @@ class ConfigurationKeys {
             const description = datamap["offlineitem_.description"];
             datamap["#description"] = description;
             datamap["description"] = description;
-            datamap["storeloc"] = null;
         }
 
         /**
@@ -20329,7 +20684,18 @@ class ConfigurationKeys {
             if (!datamap["itemnum"]) return;
             datamap["itemnum"] = "null$ignorewatch";
             cleanItemData(datamap);
-            datamap["storeloc"] = null;
+        }
+
+        /**
+         * Clear item data.
+         * 
+         * @param {events.afterchange} event
+         */
+        function storeRoomSelected(event){
+            const datamap = event.datamap;
+            if (!datamap["itemnum"]) return;
+            datamap["itemnum"] = "null$ignorewatch";
+            cleanItemData(datamap);
         }
 
         //#endregion
@@ -20339,6 +20705,7 @@ class ConfigurationKeys {
             lineSelected,
             itemSelected,
             categorySelected,
+            storeRoomSelected,
             getStoreRoomWhereClause,
             getAvailableItemsWhereClause
         };
@@ -20348,7 +20715,7 @@ class ConfigurationKeys {
 
     //#region Service registration
 
-    angular.module("sw_mobile_services").factory("materialService", ["swdbDAO", materialService]);
+    angular.module("sw_mobile_services").factory("materialService", ["swdbDAO", "crudContextHolderService", materialService]);
 
     //#endregion
 
@@ -20766,7 +21133,7 @@ class ConfigurationKeys {
                     const json = datamap.jsonFields || JSON.stringify(datamap);
                     const parsedDM = datamap.jsonFields ? JSON.parse(datamap.jsonFields) : datamap; //keeping backwards compatibility //newJson = datamapSanitizationService.sanitize(newJson);
 
-                    const idx = this.searchIndexService.buildIndexes(application.textIndexes, application.numericIndexes, application.dateIndexes, JSON.parse(datamap.jsonFields));
+                    const idx = datamap.indexData || this.searchIndexService.buildIndexes(application.textIndexes, application.numericIndexes, application.dateIndexes, JSON.parse(datamap.jsonFields));
                     const query = { query: this.offlineEntities.CompositionDataEntry.insertionQueryPattern, args: [datamap.application, json, datamap.id, String(datamap.approwstamp), id, idx.t1, idx.t2, idx.t3, idx.t4, idx.t5, idx.n1, idx.n2, idx.d1, idx.d2, idx.d3] };
 
 
@@ -21546,10 +21913,20 @@ class ConfigurationKeys {
          * @param {Object} properties 
          */
         const overrideCurrentUserProperties = function(properties) {
+            if (!properties){
+                return;
+            }
+
             const current = currentFullUser();
-            setUserProperties(current, properties);
-            setHasChanged(current, false);
-            localStorageService.put(config.authkey, current);
+
+            if (current){
+                //mostly for unit tests
+                setUserProperties(current, properties);
+                setHasChanged(current, false);
+                localStorageService.put(config.authkey, current);
+            }
+
+            
         }
 
         /**
@@ -22870,7 +23247,11 @@ class ConfigurationKeys {
                                 const datamap = data.jsonFields ? JSON.parse(data.jsonFields) : data; //keeping backwards compatibility //newJson = datamapSanitizationService.sanitize(newJson);
                                 const remoteid = datamap[remoteIdFieldName];
 
-                                const idx = searchIndexService.buildIndexes(textIndexes, numericIndexes, dateIndexes, datamap);
+                                let idx = data.indexData;
+                                if (!data.indexData){
+                                    //legacy mode
+                                    idx = searchIndexService.buildIndexes(textIndexes, numericIndexes, dateIndexes, datamap)
+                                }
                                 const query = { query: queryToUse, args: [data.application, json, String(data.approwstamp), id, idx.t1, idx.t2, idx.t3, idx.t4, idx.t5, idx.n1, idx.n2, idx.d1, idx.d2, idx.d3, remoteid] };
                                 queryArray.push(query);
                             }
@@ -23792,55 +24173,143 @@ class ConfigurationKeys {
 (function (mobileServices, angular, _) {
     "use strict";
 
-    var buildIdsString = function (deletedRecordIds) {
-        var ids = [];
-        angular.forEach(deletedRecordIds, function (id) {
-            ids.push("'{0}'".format(id));
-        });
-        return ids;
-    };
-    const service = function ($http, $q, $log, swdbDAO, dispatcherService, restService, metadataModelService, rowstampService, offlineCompositionService, entities, searchIndexService, securityService, applicationStateService, configurationService, settingsService) {
+    //private functions
+    let userDataIfChanged, invokeCustomServicePromise, buildIdsString, errorHandlePromise, entities;
+
+    class dataSynchronizationService {
 
 
-        var errorHandlePromise = function (error) {
-            if (!error) {
-                return $q.when();
+
+        constructor($http, $q, $log, swdbDAO, dispatcherService, offlineRestService, metadataModelService, rowstampService, offlineCompositionService, offlineEntities, searchIndexService, securityService, applicationStateService, configurationService, settingsService) {
+            this.$http = $http;
+            this.$q = $q;
+            this.$log = $log;
+            this.swdbDAO = swdbDAO;
+            this.dispatcherService = dispatcherService;
+            this.restService = offlineRestService;
+            this.metadataModelService = metadataModelService;
+            this.rowstampService = rowstampService;
+            this.offlineCompositionService = offlineCompositionService;
+
+            this.searchIndexService = searchIndexService;
+            this.securityService = securityService;
+            this.applicationStateService = applicationStateService;
+            this.configurationService = configurationService;
+            this.settingsService = settingsService;
+
+            entities = offlineEntities;
+
+
+            userDataIfChanged = function () {
+                const current = securityService.currentFullUser();
+                if (!current) {
+                    return securityService.logout();
+                }
+                return current.meta && current.meta.changed ? current : null;
+            };
+
+            invokeCustomServicePromise = (result, queryArray) => {
+                return $q.when(dispatcherService.invokeService(`${result.data.clientName}.dataSynchronizationHook`, 'modifyQueries', [result.data, queryArray])).then(() => queryArray);
             }
-            return $q.reject(error);
-        };
 
-        function invokeCustomServicePromise (result, queryArray) {
-            return $q.when(dispatcherService.invokeService(`${result.data.clientName}.dataSynchronizationHook`, 'modifyQueries', [result.data, queryArray])).then(() => queryArray);
+
+            buildIdsString = function (deletedRecordIds) {
+                var ids = [];
+                angular.forEach(deletedRecordIds, function (id) {
+                    ids.push("'{0}'".format(id));
+                });
+                return ids;
+            };
+
+            errorHandlePromise = function (error) {
+                if (!error) {
+                    return $q.when();
+                }
+                return $q.reject(error);
+            };
+
+
+
+
+        }
+
+        /**
+         * 
+         * @param {*} firstInLoop 
+         * @param {*} app null if this is a full sync, or a specific application for a quick sync
+         * @param {*} currentApps the list of all available applications
+         * @param {*} compositionMap a map of all compositions rowstamps, to
+         * @param {*} clientOperationId for auditing the operation at server side
+         */
+        createAppSyncPromise(firstInLoop, app, currentApps, compositionMap, clientOperationId) {
+            var log = this.$log.get("dataSynchronizationService#createAppSyncPromise");
+
+            const resultHandlePromise = this.resultHandlePromise.bind(this);
+            const that = this;
+
+            return this.applicationStateService.getServerDeviceData()
+                .then(deviceData => {
+                    return that.rowstampService.generateRowstampMap(app)
+                        .then(rowstampMap => {
+                            return { deviceData, rowstampMap }
+                        });
+                }).then(({ rowstampMap, deviceData }) => {
+                    //see samplerequest.json
+                    rowstampMap.compositionmap = compositionMap;
+                    log.debug("invoking service to get new data");
+                    const payload = {
+                        applicationName: app,
+                        clientCurrentTopLevelApps: currentApps,
+                        returnNewApps: firstInLoop,
+                        clientOperationId,
+                        userData: userDataIfChanged(),
+                        rowstampMap,
+                        deviceData
+                    };
+                    return that.restService.post("Mobile", "PullNewData", null, payload);
+                })
+                .then(resultHandlePromise);
         }
 
 
 
-        function resultHandlePromise(result) {
-            const log = $log.get("dataSynchronizationService#createAppSyncPromise", ["sync"]);
-            const topApplicationData = result.data.topApplicationData;
-            const compositionData = result.data.compositionData;
+        /**
+         *  Returns an object (promise) containing the query array to run and the number of downloads (which excludes the compositions count)
+         * 
+         * 
+         * @param {*} result coming from MobileController#PullNewData 
+         */
+        generateQueriesPromise(result) {
+            const data = result.data;
+            const log = this.$log.get("dataSynchronizationService#generateQueries", ["sync"]);
 
-            const userProperties = result.data.userProperties;
+            const topApplicationData = data.topApplicationData;
+            const compositionData = data.compositionData;
 
-            const currentFacilities = (securityService.currentFullUser() && securityService.currentFullUser().properties && securityService.currentFullUser().properties["sync.facilities"]) || [];
+            const userProperties = data.userProperties;
+            const fullUser = this.securityService.currentFullUser();
+
+            const currentFacilities = (fullUser && fullUser.properties && fullUser.properties["sync.facilities"]) || [];
             const serverFacilities = (userProperties && userProperties["sync.facilities"]) || [];
-            const facilityChanges = result.data.facilitiesUpdated || !_.isEqual(currentFacilities.sort(), serverFacilities.sort());
-            configurationService.getFullConfig(ConfigurationKeys.FacilitiesChanged).then(config => {
+            const facilityChanges = data.facilitiesUpdated || !_.isEqual(currentFacilities.sort(), serverFacilities.sort());
+            this.configurationService.getFullConfig(ConfigurationKeys.FacilitiesChanged).then(config => {
                 const save = config === null || (config && config.value === false && facilityChanges);
                 if (save) {
-                    configurationService.saveConfig({ key: ConfigurationKeys.FacilitiesChanged, value: facilityChanges });
+                    this.configurationService.saveConfig({ key: ConfigurationKeys.FacilitiesChanged, value: facilityChanges });
                 }
             });
 
-            securityService.overrideCurrentUserProperties(userProperties);
+            this.securityService.overrideCurrentUserProperties(userProperties);
 
+            //do not modify to const as this array is modified internally to append compositions and custom entries
             let queryArray = [];
 
-            if (result.data.isEmpty) {
+            if (data.isEmpty) {
                 log.info("no new data returned from the server");
-                return invokeCustomServicePromise(result, queryArray).then(customServiceDownloadItems => {
+                return invokeCustomServicePromise(result, queryArray).then(queryArray => {
                     //interrupting async calls
-                    return !!customServiceDownloadItems ? customServiceDownloadItems : 0;
+                    const numberOfDownloadedItems= 0;
+                    return { queryArray, numberOfDownloadedItems };
                 })
 
             }
@@ -23861,7 +24330,7 @@ class ConfigurationKeys {
                     const newJson = newDataMap.jsonFields || JSON.stringify(newDataMap); //keeping backwards compatibility //newJson = datamapSanitizationService.sanitize(newJson);
                     const datamap = newDataMap.jsonFields ? JSON.parse(newDataMap.jsonFields) : newDataMap; //keeping backwards compatibility //newJson = datamapSanitizationService.sanitize(newJson);
 
-                    const idx = searchIndexService.buildIndexes(application.textIndexes, application.numericIndexes, application.dateIndexes, datamap);
+                    const idx = newDataMap.indexData || this.searchIndexService.buildIndexes(application.textIndexes, application.numericIndexes, application.dateIndexes, datamap);
                     const insertQuery = { query: entities.DataEntry.insertOrReplacePattern, args: [newDataMap.application, newJson, newDataMap.id, String(newDataMap.approwstamp), id, idx.t1, idx.t2, idx.t3, idx.t4, idx.t5, idx.n1, idx.n2, idx.d1, idx.d2, idx.d3] };
                     queryArray.push(insertQuery);
                 });
@@ -23872,7 +24341,7 @@ class ConfigurationKeys {
                     const newJson = insertOrUpdateDatamap.jsonFields || JSON.stringify(insertOrUpdateDatamap); //keeping backwards compatibility //newJson = datamapSanitizationService.sanitize(newJson);
                     const datamap = insertOrUpdateDatamap.jsonFields ? JSON.parse(insertOrUpdateDatamap.jsonFields) : insertOrUpdateDatamap; //keeping backwards compatibility //newJson = datamapSanitizationService.sanitize(newJson);
 
-                    const idx = searchIndexService.buildIndexes(application.textIndexes, application.numericIndexes, application.dateIndexes, datamap);
+                    const idx = insertOrUpdateDatamap.indexData || this.searchIndexService.buildIndexes(application.textIndexes, application.numericIndexes, application.dateIndexes, datamap);
                     const insertOrUpdateQuery = { query: entities.DataEntry.insertOrReplacePattern, args: [insertOrUpdateDatamap.application, newJson, insertOrUpdateDatamap.id, String(insertOrUpdateDatamap.approwstamp), id, idx.t1, idx.t2, idx.t3, idx.t4, idx.t5, idx.n1, idx.n2, idx.d1, idx.d2, idx.d3] };
                     queryArray.push(insertOrUpdateQuery);
                 });
@@ -23881,7 +24350,7 @@ class ConfigurationKeys {
                     const updateJson = updateDataMap.jsonFields || JSON.stringify(updateDataMap); // keeping backward compatibility //updateJson = datamapSanitizationService.sanitize(updateJson);
                     const datamap = updateDataMap.jsonFields ? JSON.parse(updateDataMap.jsonFields) : updateDataMap; //keeping backwards compatibility //newJson = datamapSanitizationService.sanitize(newJson);
 
-                    const idx = searchIndexService.buildIndexes(application.textIndexes, application.numericIndexes, application.dateIndexes, datamap);
+                    const idx = updateDataMap.indexData || this.searchIndexService.buildIndexes(application.textIndexes, application.numericIndexes, application.dateIndexes, datamap);
                     const updateQuery = { query: entities.DataEntry.updateQueryPattern, args: [updateJson, String(updateDataMap.approwstamp), idx.t1, idx.t2, idx.t3, idx.t4, idx.t5, idx.n1, idx.n2, idx.d1, idx.d2, idx.d3, updateDataMap.id, updateDataMap.application] };
                     queryArray.push(updateQuery);
                 });
@@ -23902,74 +24371,44 @@ class ConfigurationKeys {
             //test
             // ignoring composition number to SyncOperation table
             const numberOfDownloadedItems = queryArray.length;
-            return offlineCompositionService.generateSyncQueryArrays(compositionData)
+
+            return this.offlineCompositionService.generateSyncQueryArrays(compositionData)
                 .then(compositionQueriesToAppend => queryArray.concat(compositionQueriesToAppend))
                 .then((queryArray) => {
                     return invokeCustomServicePromise(result, queryArray);
+                }).then(queryArray => {
+                    return { queryArray, numberOfDownloadedItems };
                 })
-                .then((queryArray) => swdbDAO.executeQueries(queryArray))
-                .then(() => numberOfDownloadedItems);
-        };
 
-        function userDataIfChanged() {
-            const current = securityService.currentFullUser();
-            if (!current) {
-                return securityService.logout();
-            }
-            return current.meta && current.meta.changed ? current : null;
         }
 
-        function createAppSyncPromise(firstInLoop, app, currentApps, compositionMap, clientOperationId) {
-            var log = $log.get("dataSynchronizationService#createAppSyncPromise");
 
-            return applicationStateService.getServerDeviceData().then(deviceData => {
-                return rowstampService.generateRowstampMap(app)
-                    .then(function (rowstampMap) {
-                        //see samplerequest.json
-                        rowstampMap.compositionmap = compositionMap;
-                        log.debug("invoking service to get new data");
-                        const payload = {
-                            applicationName: app,
-                            clientCurrentTopLevelApps: currentApps,
-                            returnNewApps: firstInLoop,
-                            clientOperationId,
-                            userData: userDataIfChanged(),
-                            rowstampMap,
-                            deviceData
-                        };
-                        return restService.post("Mobile", "PullNewData", null, payload);
-                    }).then(resultHandlePromise);
-            });
-        };
+        resultHandlePromise(result) {
 
-        function syncSingleItem(item, clientOperationId) {
-            const app = item.application;
-
-            return applicationStateService.getServerDeviceData().then(deviceData => {
-                return rowstampService.generateCompositionRowstampMap().then(compositionMap => {
-                    const rowstampMap = {
-                        compositionmap: compositionMap
-                    }
-                    const payload = {
-                        applicationName: app,
-                        itemsToDownload: [item.remoteId],
-                        userData: userDataIfChanged(),
-                        rowstampMap,
-                        deviceData,
-                        clientOperationId
-                    };
-                    var promise = restService.post("Mobile", "PullNewData", null, payload).then(resultHandlePromise)
-                        .catch(errorHandlePromise);
-                    return $q.all([promise]);
-                });
+            return this.generateQueriesPromise(result).then(result => {
+                return this.swdbDAO.executeQueries(result.queryArray).then(() => {
+                    return result.numberOfDownloadedItems;
+                })
             });
         }
 
-        function syncData(clientOperationId) {
+        /**
+         *  Main sync operation, receives a clientOperationId for storing an audit entry at server side.
+         * 
+         *  
+         * 
+         * @param {String} clientOperationId for storing an offline audit entry at server side
+         */
+        syncData(clientOperationId) {
 
-            return applicationStateService.getServerDeviceData()
+
+            const resultHandlePromise = this.resultHandlePromise.bind(this);
+            const createAppSyncPromise = this.createAppSyncPromise.bind(this);
+            const that = this;
+
+            return this.applicationStateService.getServerDeviceData()
                 .then(deviceData => {
-                    var currentApps = metadataModelService.getApplicationNames();
+                    var currentApps = this.metadataModelService.getApplicationNames();
                     const firstTime = currentApps.length === 0;
                     var payload;
                     if (firstTime) {
@@ -23982,39 +24421,52 @@ class ConfigurationKeys {
                             userData: userDataIfChanged()
                         };
                         //single server call
-                        return restService.post("Mobile", "PullNewData", null, payload)
+                        return that.restService.post("Mobile", "PullNewData", null, payload)
                             .then(resultHandlePromise)
                             .catch(errorHandlePromise);
                     }
-                    return rowstampService.generateCompositionRowstampMap()
+                    return that.rowstampService.generateCompositionRowstampMap()
                         .then(function (compositionMap) {
                             const httpPromises = [];
-                            //                            for (let i = 0; i < currentApps.length; i++) {
-                            //                                const promise = createAppSyncPromise(i === 0, currentApps[i], currentApps, compositionMap, clientOperationId)
-                            //                                    .catch(errorHandlePromise);
-                            //                                httpPromises.push(promise);
-                            //                            }
                             const promise = createAppSyncPromise(true, null, currentApps, compositionMap, clientOperationId).catch(errorHandlePromise);
                             httpPromises.push(promise);
 
-                            return $q.all(httpPromises);
+                            return that.$q.all(httpPromises);
                         });
                 });
 
 
-        };
+        }
 
+        syncSingleItem(item, clientOperationId) {
+            const app = item.application;
+            const resultHandlePromise = this.resultHandlePromise.bind(this);
 
-        const api = {
-            syncData,
-            syncSingleItem
-        };
+            return this.applicationStateService.getServerDeviceData().then(deviceData => {
+                return this.rowstampService.generateCompositionRowstampMap().then(compositionMap => {
+                    const rowstampMap = {
+                        compositionmap: compositionMap
+                    }
+                    const payload = {
+                        applicationName: app,
+                        itemsToDownload: [item.remoteId],
+                        userData: userDataIfChanged(),
+                        rowstampMap,
+                        deviceData,
+                        clientOperationId
+                    };
+                    var promise = this.restService.post("Mobile", "PullNewData", null, payload).then(resultHandlePromise)
+                        .catch(errorHandlePromise);
+                    return this.$q.all([promise]);
+                });
+            });
+        }
 
-        return api;
-    };
-    service.$inject = ["$http", "$q", "$log", "swdbDAO", "dispatcherService", "offlineRestService", "metadataModelService", "rowstampService", "offlineCompositionService", "offlineEntities", "searchIndexService", "securityService", "applicationStateService", "configurationService", "settingsService"];
+    }
 
-    mobileServices.factory('dataSynchronizationService', service);
+    dataSynchronizationService.$inject = ["$http", "$q", "$log", "swdbDAO", "dispatcherService", "offlineRestService", "metadataModelService", "rowstampService", "offlineCompositionService", "offlineEntities", "searchIndexService", "securityService", "applicationStateService", "configurationService", "settingsService"];
+
+    mobileServices.service('dataSynchronizationService', dataSynchronizationService);
 
 })(mobileServices, angular, _);
 ;
@@ -24394,7 +24846,9 @@ class ConfigurationKeys {
                 .map((entries, application) => {
                     // for some reason this query only works if there are no '' around the ids
                     var ids = _.pluck(entries, "id");
-                    return { query: entities.DataEntry.deleteInIdsStatement, args: [ids, application] };
+
+
+                    return { query: entities.DataEntry.deleteInIdsStatement.format(buildIdsString(ids)), args: [application] };
                 }) // [PreparedStatement]
                 .value();
 
@@ -24559,6 +25013,10 @@ class ConfigurationKeys {
                 throw e;
             }
 
+            if (isString(error)){
+                error = new Error(error);
+            }
+
             error.title = "Error Synchronizing Data";
             throw error;
         }
@@ -24716,6 +25174,7 @@ class ConfigurationKeys {
                         })
                         .finally(() => {
                             loadingService.hide();
+                            menuModelService.updateAppsCount();
                             tracking.trackFullState("synchornizationFacace#syncItem post-quicksync");
                         });
                 });
@@ -27816,7 +28275,7 @@ softwrench.directive('crudOutputFields', ["$log", "fieldService", "crudContextSe
             return preferredLocations;
         }
 
-      
+
 
 
         getAssetWhereClause() {
@@ -27883,8 +28342,8 @@ softwrench.directive('crudOutputFields', ["$log", "fieldService", "crudContextSe
             const now = new Date();
             const todayTime = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0).getTime();
             const tomorrowTime = todayTime + day;
-            const laborcode =  this.laborCode();
-            
+            const laborcode = this.laborCode();
+
             return `assignment_.dateindex01 >= ${todayTime} and assignment_.dateindex01 < ${tomorrowTime} and assignment_.textindex02 = '${laborcode}'`;
         }
 
@@ -28134,7 +28593,9 @@ softwrench.directive('crudOutputFields', ["$log", "fieldService", "crudContextSe
             facilities: {
                 available: "sync.availablefacilities",
                 selected: "sync.facilities"
-            }
+            },
+            secondorgid: "sync.secondaryorg",
+            secondsiteid: "sync.secondarysite"
         };
         //#endregion
 
@@ -28181,6 +28642,9 @@ softwrench.directive('crudOutputFields', ["$log", "fieldService", "crudContextSe
                 options: facilityOptions,
                 selected: selectedFacilities.join(";")
             }
+
+            userVm.secondorgid = user.properties[config.secondorgid];
+            userVm.secondsiteid = user.properties[config.secondsiteid];
             
             return userVm;
         }
